@@ -1,25 +1,30 @@
 print("🔥 script started")
 
 import os
+import requests
+import re
+import time
+import random
 from playwright.sync_api import sync_playwright
-import requests, re, time, random
 
 # ===== 配置 =====
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
 BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-TABLE = "视频分析"
+TABLE = os.getenv("AIRTABLE_TABLE") or "视频分析"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 KEYWORDS = [
-    "acne skincare routine",
-    "skincare before after",
-    "perfume review",
-    "perfume malaysia",
-    "skincare malaysia",
-    "glow up skin",
-    "smell good tips"
+    "skincare routine",
+    "acne tips",
+    "perfume girl",
+    "how to smell good",
+    "that girl routine",
+    "self care day",
+    "glow up tips",
+    "morning routine girl",
+    "clean girl lifestyle"
 ]
 
 # ===== 搜索视频 =====
@@ -29,57 +34,60 @@ def search_videos(keyword):
     url = f"https://www.tiktok.com/search?q={keyword}"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=False)
 
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
         )
 
         page = context.new_page()
 
-        # 🚀 阻止图片/视频 加速
-        page.route("**/*", lambda route: route.abort()
-            if route.request.resource_type in ["image","media","font"]
-            else route.continue_())
-
         try:
-            page.goto(url, timeout=30000)
-            page.wait_for_timeout(5000)
+            page.goto(url, timeout=60000)
+            page.wait_for_selector("a[href*='/video/']", timeout=15000)
+        except:
+            print("❌ load failed")
+            browser.close()
+            return []
 
-            for _ in range(5):
-                page.mouse.wheel(0, 3000)
-                page.wait_for_timeout(2000)
-
-            links = page.eval_on_selector_all(
-                "a[href*='/video/']",
-                "els => els.map(e => e.href)"
-            )
-
-            print(f"🎥 found {len(links)}")
-
-        except Exception as e:
-            print("❌ error:", e)
-            links = []
+        links = page.eval_on_selector_all(
+            "a[href*='/video/']",
+            "els => els.map(e => e.href)"
+        )
 
         browser.close()
-        return list(set(links))[:20]
+
+        links = list(set(links))
+        print(f"🎥 found {len(links)} videos")
+
+        return links[:5]
 
 
-# ===== 抓视频数据 =====
+# ===== 抓数据 =====
 def scrape_video(url):
+    print(f"📊 scraping: {url}")
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        browser = p.chromium.launch(headless=False)
 
-        page.goto(url)
-        page.wait_for_timeout(random.randint(5000,8000))
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
+        )
 
-        html = page.content()
+        page = context.new_page()
 
-        like = re.search(r'"diggCount":(\d+)', html)
-        comment = re.search(r'"commentCount":(\d+)', html)
-        play = re.search(r'"playCount":(\d+)', html)
-        title = re.search(r'<title>(.*?)</title>', html)
+        try:
+            page.goto(url, timeout=60000)
+            page.wait_for_timeout(random.randint(4000,7000))
+        except:
+            browser.close()
+            return None
+
+        html = page.content().lower()
+
+        like = re.search(r'"diggcount":(\d+)', html)
+        comment = re.search(r'"commentcount":(\d+)', html)
+        play = re.search(r'"playcount":(\d+)', html)
 
         browser.close()
 
@@ -88,47 +96,33 @@ def scrape_video(url):
             "like": int(like.group(1)) if like else 0,
             "comment": int(comment.group(1)) if comment else 0,
             "play": int(play.group(1)) if play else 0,
-            "title": title.group(1).lower() if title else ""
+            "html": html
         }
 
 
-# ===== 内容分类 =====
-def classify_content(data):
-    text = data["title"]
+# ===== 判断内容类型 =====
+def is_good_content(data):
+    text = data["html"]
 
-    if any(x in text for x in ["before", "after", "transformation"]):
-        return "Transformation"
-
-    if any(x in text for x in ["routine", "daily", "skincare"]):
-        return "Routine"
-
-    if any(x in text for x in ["review", "honest", "try"]):
-        return "Review"
-
-    if any(x in text for x in ["relax", "satisfying"]):
-        return "Satisfying"
-
-    if any(x in text for x in ["perfume", "fragrance", "smell"]):
-        return "Perfume"
-
-    return "Other"
-
-
-# ===== 涨粉潜力判断 =====
-def is_follow_potential(data):
-    text = data["title"]
-
-    keywords = [
-        "i tried", "day 1", "day 7",
-        "results", "this changed",
-        "people ask me", "glow up"
+    signals = [
+        "routine",
+        "how to",
+        "tips",
+        "habits",
+        "glow up",
+        "self care",
+        "day in my life"
     ]
 
-    return any(k in text for k in keywords)
+    return any(s in text for s in signals)
 
 
 # ===== Airtable =====
-def push_airtable(data, content_type, follow):
+def push_airtable(data):
+    if not AIRTABLE_API_KEY or not BASE_ID:
+        print("⚠️ Airtable skipped")
+        return
+
     url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
 
     headers = {
@@ -139,21 +133,22 @@ def push_airtable(data, content_type, follow):
     payload = {
         "fields": {
             "视频链接": data["url"],
-            "标题": data["title"],
-            "点赞数": data["like"],
-            "评论数": data["comment"],
-            "播放量": data["play"],
-            "内容类型": content_type,
-            "涨粉潜力": follow
+            "点赞": data["like"],
+            "评论": data["comment"],
+            "播放": data["play"]
         }
     }
 
-    res = requests.post(url, json=payload, headers=headers)
-    print("📡 Airtable:", res.text)
+    r = requests.post(url, json=payload, headers=headers)
+    print("📡 Airtable:", r.text)
 
 
 # ===== Telegram =====
 def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram skipped")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     requests.post(url, data={
@@ -170,29 +165,36 @@ def main():
         all_links += search_videos(k)
 
     all_links = list(set(all_links))
-    print(f"🚀 total: {len(all_links)}")
+    print(f"🚀 total videos: {len(all_links)}")
+
+    # fallback（保证一定有数据）
+    if len(all_links) == 0:
+        print("⚠️ using fallback")
+        all_links = [
+            "https://www.tiktok.com/tag/skincare",
+            "https://www.tiktok.com/tag/glowup"
+        ]
 
     for link in all_links:
-        print(f"\n📊 {link}")
         data = scrape_video(link)
 
-        content_type = classify_content(data)
-        follow = is_follow_potential(data)
+        if not data:
+            continue
 
-        print("📊 类型:", content_type)
-        print("📊 涨粉:", follow)
+        if not is_good_content(data):
+            print("❌ skip non-content")
+            continue
 
-        push_airtable(data, content_type, follow)
+        push_airtable(data)
 
-        if follow:
-            send_telegram(f"🔥涨粉视频\n类型:{content_type}\n{link}")
+        send_telegram(
+            f"🔥 内容参考\n\n{data['url']}\n👍 {data['like']} 💬 {data['comment']}"
+        )
 
         time.sleep(random.randint(5,10))
 
+    print("🔥 script finished")
 
-# ===== 持续运行 =====
+
 if __name__ == "__main__":
-    while True:
-        main()
-        print("⏳ 30分钟后再跑...")
-        time.sleep(1800)
+    main()
