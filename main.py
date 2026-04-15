@@ -4,7 +4,7 @@ import os
 import requests, re, time, random
 from playwright.sync_api import sync_playwright
 
-# ===== 配置（从 GitHub Secrets 读取）=====
+# ===== 配置 =====
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
 BASE_ID = os.getenv("AIRTABLE_BASE_ID") 
 TABLE = os.getenv("AIRTABLE_TABLE")
@@ -12,27 +12,37 @@ TABLE = os.getenv("AIRTABLE_TABLE")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-KEYWORDS = ["acne skincare", "stress relief"]
+# 👉 关键词只用于分类，不再用于搜索
+KEYWORDS = ["beauty", "stress", "healing"]
 
-# ===== 检查环境变量 =====
-print("AIRTABLE_API_KEY:", "OK" if AIRTABLE_API_KEY else "❌ missing")
-print("BASE_ID:", BASE_ID)
-print("TABLE:", TABLE)
-print("TELEGRAM_TOKEN:", "OK" if TELEGRAM_TOKEN else "❌ missing")
-print("CHAT_ID:", CHAT_ID)
-
-
-# ===== 抓 TikTok 搜索 =====
-def search_videos(keyword):
-    url = f"https://www.tiktok.com/search?q={keyword}"
-    print(f"🔍 searching: {keyword}")
+# ===== 抓 TikTok 推荐视频 =====
+def get_trending_videos():
+    print("🔍 grabbing trending videos")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page()
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
 
-        page.goto(url, timeout=60000)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"
+        )
+
+        page = context.new_page()
+
+        page.goto("https://www.tiktok.com/", timeout=60000)
+
+        # 👇 等加载
         page.wait_for_timeout(8000)
+
+        # 👇 模拟用户滑动（关键）
+        for _ in range(3):
+            page.mouse.wheel(0, random.randint(2000, 4000))
+            page.wait_for_timeout(random.randint(2000, 4000))
 
         links = page.eval_on_selector_all(
             "a[href*='/video/']",
@@ -44,7 +54,7 @@ def search_videos(keyword):
         links = list(set(links))
         print(f"🎥 found {len(links)} videos")
 
-        return links[:5]
+        return links[:8]
 
 
 # ===== 抓视频数据 =====
@@ -52,7 +62,11 @@ def scrape_video(url):
     print(f"📊 scraping: {url}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox"]
+        )
+
         page = browser.new_page()
 
         page.goto(url, timeout=60000)
@@ -77,17 +91,17 @@ def scrape_video(url):
         return data
 
 
-# ===== 判断是否值得卖 =====
+# ===== 判断赚钱潜力 =====
 def evaluate(data):
-    if data["comment"] > 50 and data["like"] > 500:
+    if data["comment"] > 100 and data["like"] > 1000:
         return "High"
-    elif data["comment"] > 20:
+    elif data["comment"] > 30:
         return "Medium"
     else:
         return "Low"
 
 
-# ===== 写入 Airtable =====
+# ===== Airtable =====
 def push_airtable(data):
     url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
 
@@ -107,13 +121,11 @@ def push_airtable(data):
     }
 
     res = requests.post(url, json=payload, headers=headers)
-    print("📡 Airtable response:", res.text)
+    print("📡 Airtable:", res.text)
 
 
 # ===== Telegram =====
 def send_telegram(msg):
-    print("📨 sending telegram")
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     res = requests.post(url, data={
@@ -121,25 +133,23 @@ def send_telegram(msg):
         "text": msg
     })
 
-    print("📨 Telegram response:", res.text)
+    print("📨 Telegram:", res.text)
 
 
 # ===== 主流程 =====
 def main():
-    all_links = []
+    links = get_trending_videos()
 
-    for k in KEYWORDS:
-        all_links += search_videos(k)
+    if not links:
+        print("❌ no videos found")
+        return
 
-    all_links = list(set(all_links))
-
-    print(f"🚀 total videos: {len(all_links)}")
-
-    for link in all_links:
+    for link in links:
         data = scrape_video(link)
 
+        # 👉 避免垃圾数据
         if data["play"] == 0:
-            print("⚠️ skip empty data")
+            print("⚠️ skip empty")
             continue
 
         push_airtable(data)
