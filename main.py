@@ -5,6 +5,7 @@ import requests
 import re
 import time
 import random
+from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
 # ===== 配置 =====
@@ -15,7 +16,7 @@ TABLE = os.getenv("AIRTABLE_TABLE") or "视频分析"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 👉 生活化 + 涨粉向关键词
+# ===== 关键词（生活 + 产品 + 本地）=====
 KEYWORDS = [
     "skincare",
     "acne",
@@ -24,12 +25,14 @@ KEYWORDS = [
     "glowup",
     "thatgirl",
     "cleangirl",
-    "routine",
-    "morningroutine",
-    "night routine"
+    "morning routine",
+    "night routine",
+    "生活日常",
+    "护肤分享",
+    "香水推荐"
 ]
 
-# ===== 抓 tag 页 =====
+# ===== 搜索视频 =====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
@@ -65,10 +68,10 @@ def search_videos(keyword):
 
         browser.close()
 
-        links = list(set(links))
+        links = list(set(links))[:3]  # 每关键词3个
         print(f"🎥 found {len(links)} videos")
 
-        return links[:5]
+        return links
 
 
 # ===== 抓视频数据 =====
@@ -95,37 +98,72 @@ def scrape_video(url):
             return None
 
         html = page.content().lower()
-
-        like = re.search(r'"diggcount":(\d+)', html)
-        comment = re.search(r'"commentcount":(\d+)', html)
-        play = re.search(r'"playcount":(\d+)', html)
-
         browser.close()
 
-        return {
-            "url": url,
-            "like": int(like.group(1)) if like else 0,
-            "comment": int(comment.group(1)) if comment else 0,
-            "play": int(play.group(1)) if play else 0,
-            "html": html
-        }
+    # ===== 数据提取 =====
+    like = re.search(r'"diggcount":(\d+)', html)
+    comment = re.search(r'"commentcount":(\d+)', html)
+    play = re.search(r'"playcount":(\d+)', html)
+
+    caption = re.search(r'"desc":"(.*?)"', html)
+    author = re.search(r'"author":"(.*?)"', html)
+    create_time = re.search(r'"createtime":(\d+)', html)
+
+    return {
+        "url": url,
+        "like": int(like.group(1)) if like else 0,
+        "comment": int(comment.group(1)) if comment else 0,
+        "play": int(play.group(1)) if play else 0,
+        "caption": caption.group(1) if caption else "",
+        "author": author.group(1) if author else "",
+        "time": int(create_time.group(1)) if create_time else 0,
+        "html": html
+    }
 
 
-# ===== 判断是否“内容型” =====
+# ===== 内容过滤 =====
 def is_content(data):
-    text = data["html"]
+    text = (data["caption"] + data["html"]).lower()
 
-    signals = [
-        "routine",
-        "how to",
-        "tips",
-        "habits",
-        "glow up",
-        "self care",
-        "day in my life"
+    good = [
+        "routine", "how to", "tips", "habits",
+        "glow up", "self care", "day in my life",
+        "skincare", "perfume", "review"
     ]
 
-    return any(s in text for s in signals)
+    bad = [
+        "cat", "dog", "funny", "meme",
+        "prank", "challenge"
+    ]
+
+    if any(b in text for b in bad):
+        return False
+
+    if not any(g in text for g in good):
+        return False
+
+    return True
+
+
+# ===== 时间过滤 =====
+def is_recent(data):
+    if data["time"] == 0:
+        return True
+
+    video_time = datetime.fromtimestamp(data["time"])
+    return datetime.now() - video_time < timedelta(days=14)
+
+
+# ===== 地区过滤 =====
+def is_local(data):
+    text = (data["caption"] + data["author"]).lower()
+
+    asia = [
+        "malaysia", "kuala lumpur", "malay",
+        "singapore", "sg", "indonesia", "thai"
+    ]
+
+    return any(a in text for a in asia)
 
 
 # ===== Airtable =====
@@ -143,10 +181,12 @@ def push_airtable(data):
 
     payload = {
         "fields": {
-            "视频链接": data["url"],
-            "点赞": data["like"],
-            "评论": data["comment"],
-            "播放": data["play"]
+            "Author": data["author"],
+            "Caption": data["caption"],
+            "URL": data["url"],
+            "Like": data["like"],
+            "Comment": data["comment"],
+            "Play": data["play"]
         }
     }
 
@@ -155,10 +195,20 @@ def push_airtable(data):
 
 
 # ===== Telegram =====
-def send_telegram(msg):
+def send_telegram(data):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Telegram skipped")
         return
+
+    msg = f"""🔥 内容参考
+
+👤 {data['author']}
+👍 {data['like']} 💬 {data['comment']}
+
+📝 {data['caption'][:80]}
+
+🔗 {data['url']}
+"""
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
@@ -178,13 +228,9 @@ def main():
     all_links = list(set(all_links))
     print(f"🚀 total videos: {len(all_links)}")
 
-    # 👉 fallback（保证一定有数据）
     if len(all_links) == 0:
-        print("⚠️ using fallback")
-        all_links = [
-            "https://www.tiktok.com/tag/skincare",
-            "https://www.tiktok.com/tag/glowup"
-        ]
+        print("❌ no videos found")
+        return
 
     for link in all_links:
         data = scrape_video(link)
@@ -193,14 +239,21 @@ def main():
             continue
 
         if not is_content(data):
-            print("❌ skip non-content")
+            print("❌ not content")
             continue
 
-        push_airtable(data)
+        if not is_recent(data):
+            print("⏰ too old")
+            continue
 
-        send_telegram(
-            f"🔥 内容参考\n\n{data['url']}\n👍 {data['like']} 💬 {data['comment']}"
-        )
+        if not is_local(data):
+            print("🌍 not local")
+            continue
+
+        print("✅ good video")
+
+        push_airtable(data)
+        send_telegram(data)
 
         time.sleep(random.randint(5,10))
 
