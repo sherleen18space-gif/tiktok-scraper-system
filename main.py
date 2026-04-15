@@ -1,62 +1,83 @@
 print("🔥 script started")
 
 import os
-from playwright.sync_api import sync_playwright
 import requests, re, time, random
+from playwright.sync_api import sync_playwright
 
-# ===== 配置 =====
+# ===== 配置（从 GitHub Secrets 读取）=====
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-TABLE = "视频分析"
+BASE_ID = os.getenv("AIRTABLE_BASE_ID") 
+TABLE = os.getenv("AIRTABLE_TABLE")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ✅ 先用固定视频（测试用）
-TEST_LINKS = [
-    "https://www.tiktok.com/@scout2015/video/6718335390845095173"
-]
+KEYWORDS = ["acne skincare", "stress relief"]
 
-# ===== 抓数据 =====
-def scrape_video(url):
-    print(f"📥 scraping: {url}")
+# ===== 检查环境变量 =====
+print("AIRTABLE_API_KEY:", "OK" if AIRTABLE_API_KEY else "❌ missing")
+print("BASE_ID:", BASE_ID)
+print("TABLE:", TABLE)
+print("TELEGRAM_TOKEN:", "OK" if TELEGRAM_TOKEN else "❌ missing")
+print("CHAT_ID:", CHAT_ID)
+
+
+# ===== 抓 TikTok 搜索 =====
+def search_videos(keyword):
+    url = f"https://www.tiktok.com/search?q={keyword}"
+    print(f"🔍 searching: {keyword}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
         page = browser.new_page()
 
-        try:
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(random.randint(4000,6000))
+        page.goto(url, timeout=60000)
+        page.wait_for_timeout(8000)
 
-            html = page.content()
+        links = page.eval_on_selector_all(
+            "a[href*='/video/']",
+            "els => els.map(e => e.href)"
+        )
 
-            like = re.search(r'"diggCount":(\d+)', html)
-            comment = re.search(r'"commentCount":(\d+)', html)
-            play = re.search(r'"playCount":(\d+)', html)
+        browser.close()
 
-            data = {
-                "url": url,
-                "like": int(like.group(1)) if like else 0,
-                "comment": int(comment.group(1)) if comment else 0,
-                "play": int(play.group(1)) if play else 0
-            }
+        links = list(set(links))
+        print(f"🎥 found {len(links)} videos")
 
-            print("✅ scraped:", data)
-            return data
-
-        except Exception as e:
-            print("❌ scrape error:", e)
-            return None
-
-        finally:
-            browser.close()
+        return links[:5]
 
 
-# ===== 判断购买意图 =====
+# ===== 抓视频数据 =====
+def scrape_video(url):
+    print(f"📊 scraping: {url}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_page()
+
+        page.goto(url, timeout=60000)
+        page.wait_for_timeout(random.randint(5000,8000))
+
+        html = page.content()
+
+        like = re.search(r'"diggCount":(\d+)', html)
+        comment = re.search(r'"commentCount":(\d+)', html)
+        play = re.search(r'"playCount":(\d+)', html)
+
+        browser.close()
+
+        data = {
+            "url": url,
+            "like": int(like.group(1)) if like else 0,
+            "comment": int(comment.group(1)) if comment else 0,
+            "play": int(play.group(1)) if play else 0
+        }
+
+        print("📊 result:", data)
+        return data
+
+
+# ===== 判断是否值得卖 =====
 def evaluate(data):
     if data["comment"] > 50 and data["like"] > 500:
         return "High"
@@ -68,8 +89,6 @@ def evaluate(data):
 
 # ===== 写入 Airtable =====
 def push_airtable(data):
-    print("📤 pushing to Airtable")
-
     url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
 
     headers = {
@@ -88,10 +107,10 @@ def push_airtable(data):
     }
 
     res = requests.post(url, json=payload, headers=headers)
-    print("Airtable response:", res.text)
+    print("📡 Airtable response:", res.text)
 
 
-# ===== Telegram 通知 =====
+# ===== Telegram =====
 def send_telegram(msg):
     print("📨 sending telegram")
 
@@ -102,30 +121,35 @@ def send_telegram(msg):
         "text": msg
     })
 
-    print("Telegram response:", res.text)
+    print("📨 Telegram response:", res.text)
 
 
 # ===== 主流程 =====
 def main():
-    print("🚀 main started")
+    all_links = []
 
-    all_links = TEST_LINKS   # ❗先用测试
+    for k in KEYWORDS:
+        all_links += search_videos(k)
+
+    all_links = list(set(all_links))
+
+    print(f"🚀 total videos: {len(all_links)}")
 
     for link in all_links:
         data = scrape_video(link)
 
-        if not data:
+        if data["play"] == 0:
+            print("⚠️ skip empty data")
             continue
 
         push_airtable(data)
 
         result = evaluate(data)
-        print("📊 result:", result)
 
         if result == "High":
             send_telegram(f"🔥可卖视频:\n{link}")
 
-        time.sleep(5)
+        time.sleep(random.randint(5,10))
 
     print("🔥 script finished")
 
