@@ -1,57 +1,60 @@
+print("🔥 script started")
+
 import os
 from playwright.sync_api import sync_playwright
 import requests, re, time, random
 
 # ===== 配置 =====
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = os.getenv("AIRTABLE_BASE_ID") 
+BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 TABLE = "视频分析"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-KEYWORDS = ["acne skincare", "stress relief"]
-
-# ===== 抓搜索结果 =====
-def search_videos(keyword):
-    url = f"https://www.tiktok.com/search?q={keyword}"
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url)
-        page.wait_for_timeout(5000)
-
-        links = page.eval_on_selector_all(
-            "a[href*='/video/']",
-            "els => els.map(e => e.href)"
-        )
-
-        browser.close()
-        return list(set(links))[:5]
+# ✅ 先用固定视频（测试用）
+TEST_LINKS = [
+    "https://www.tiktok.com/@scout2015/video/6718335390845095173"
+]
 
 # ===== 抓数据 =====
 def scrape_video(url):
+    print(f"📥 scraping: {url}")
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         page = browser.new_page()
-        page.goto(url)
-        page.wait_for_timeout(random.randint(3000,6000))
 
-        html = page.content()
+        try:
+            page.goto(url, timeout=60000)
+            page.wait_for_timeout(random.randint(4000,6000))
 
-        like = re.search(r'"diggCount":(\d+)', html)
-        comment = re.search(r'"commentCount":(\d+)', html)
-        play = re.search(r'"playCount":(\d+)', html)
+            html = page.content()
 
-        browser.close()
+            like = re.search(r'"diggCount":(\d+)', html)
+            comment = re.search(r'"commentCount":(\d+)', html)
+            play = re.search(r'"playCount":(\d+)', html)
 
-        return {
-            "url": url,
-            "like": int(like.group(1)) if like else 0,
-            "comment": int(comment.group(1)) if comment else 0,
-            "play": int(play.group(1)) if play else 0
-        }
+            data = {
+                "url": url,
+                "like": int(like.group(1)) if like else 0,
+                "comment": int(comment.group(1)) if comment else 0,
+                "play": int(play.group(1)) if play else 0
+            }
+
+            print("✅ scraped:", data)
+            return data
+
+        except Exception as e:
+            print("❌ scrape error:", e)
+            return None
+
+        finally:
+            browser.close()
+
 
 # ===== 判断购买意图 =====
 def evaluate(data):
@@ -62,9 +65,13 @@ def evaluate(data):
     else:
         return "Low"
 
+
 # ===== 写入 Airtable =====
 def push_airtable(data):
+    print("📤 pushing to Airtable")
+
     url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
+
     headers = {
         "Authorization": f"Bearer {AIRTABLE_API_KEY}",
         "Content-Type": "application/json"
@@ -80,33 +87,48 @@ def push_airtable(data):
         }
     }
 
-    requests.post(url, json=payload, headers=headers)
+    res = requests.post(url, json=payload, headers=headers)
+    print("Airtable response:", res.text)
+
 
 # ===== Telegram 通知 =====
 def send_telegram(msg):
+    print("📨 sending telegram")
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={
+
+    res = requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": msg
     })
 
+    print("Telegram response:", res.text)
+
+
 # ===== 主流程 =====
 def main():
-    all_links = []
+    print("🚀 main started")
 
-    for k in KEYWORDS:
-        all_links += search_videos(k)
-
-    all_links = list(set(all_links))
+    all_links = TEST_LINKS   # ❗先用测试
 
     for link in all_links:
         data = scrape_video(link)
+
+        if not data:
+            continue
+
         push_airtable(data)
 
-        if evaluate(data) == "High":
+        result = evaluate(data)
+        print("📊 result:", result)
+
+        if result == "High":
             send_telegram(f"🔥可卖视频:\n{link}")
 
-        time.sleep(random.randint(5,10))
+        time.sleep(5)
+
+    print("🔥 script finished")
+
 
 if __name__ == "__main__":
     main()
