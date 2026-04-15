@@ -15,36 +15,44 @@ TABLE = os.getenv("AIRTABLE_TABLE") or "视频分析"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# 👉 生活化 + 涨粉向关键词
 KEYWORDS = [
-    "skincare routine",
-    "acne tips",
-    "perfume girl",
-    "how to smell good",
-    "that girl routine",
-    "self care day",
-    "glow up tips",
-    "morning routine girl",
-    "clean girl lifestyle"
+    "skincare",
+    "acne",
+    "perfume",
+    "selfcare",
+    "glowup",
+    "thatgirl",
+    "cleangirl",
+    "routine",
+    "morningroutine",
+    "night routine"
 ]
 
-# ===== 搜索视频 =====
+# ===== 抓 tag 页 =====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
-    url = f"https://www.tiktok.com/search?q={keyword}"
+    tag = keyword.replace(" ", "")
+    url = f"https://www.tiktok.com/tag/{tag}"
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
 
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
+            viewport={"width": 390, "height": 844},
+            locale="en-US"
         )
 
         page = context.new_page()
 
         try:
             page.goto(url, timeout=60000)
-            page.wait_for_selector("a[href*='/video/']", timeout=15000)
+            page.wait_for_timeout(8000)
         except:
             print("❌ load failed")
             browser.close()
@@ -63,12 +71,15 @@ def search_videos(keyword):
         return links[:5]
 
 
-# ===== 抓数据 =====
+# ===== 抓视频数据 =====
 def scrape_video(url):
     print(f"📊 scraping: {url}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox"]
+        )
 
         context = browser.new_context(
             user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)"
@@ -100,8 +111,8 @@ def scrape_video(url):
         }
 
 
-# ===== 判断内容类型 =====
-def is_good_content(data):
+# ===== 判断是否“内容型” =====
+def is_content(data):
     text = data["html"]
 
     signals = [
@@ -167,7 +178,7 @@ def main():
     all_links = list(set(all_links))
     print(f"🚀 total videos: {len(all_links)}")
 
-    # fallback（保证一定有数据）
+    # 👉 fallback（保证一定有数据）
     if len(all_links) == 0:
         print("⚠️ using fallback")
         all_links = [
@@ -181,7 +192,7 @@ def main():
         if not data:
             continue
 
-        if not is_good_content(data):
+        if not is_content(data):
             print("❌ skip non-content")
             continue
 
