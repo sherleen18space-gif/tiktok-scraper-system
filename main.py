@@ -5,122 +5,152 @@ import requests
 import time
 import random
 
-# ===== API配置 =====
-RAPID_API_KEY = os.getenv("RAPID_API_KEY")
-
-BASE_URL = "https://tiktok-scraper7.p.rapidapi.com/search"
-
-HEADERS = {
-    "X-RapidAPI-Key": RAPID_API_KEY,
-    "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
-}
-
-# ===== Telegram =====
+API_KEY = os.getenv("TIKWM_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ===== 关键词 =====
+# 👉 内容关键词（生活 + 情绪 + 产品）
 KEYWORDS = [
-   "skincare routine",
+    "skincare",
     "perfume",
-    "daily vlog",
+    "daily life",
+    "vlog",
     "self care",
-    "生活日常",
+    "morning routine",
     "女生生活",
-    "马来西亚生活",
-    "KL vlog",
-    "上班族",
     "打工人",
+    "马来西亚生活",
     "治愈"
 ]
 
-# ===== 获取视频 =====
+# ===== Telegram =====
+def send(msg):
+    if not TELEGRAM_TOKEN:
+        print(msg)
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": msg
+    })
+
+# ===== 调 TikWM API =====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
-    querystring = {
-        "keyword": keyword,
-        "count": "5"
+    url = "https://www.tikwm.com/api/feed/search"
+
+    params = {
+        "keywords": keyword,
+        "count": 5,
+        "cursor": 0,
+        "hd": 1
     }
 
     try:
-        res = requests.get(BASE_URL, headers=HEADERS, params=querystring)
-        data = res.json()
-    except Exception as e:
-        print("❌ API error:", e)
+        r = requests.get(url, params=params, timeout=20)
+        data = r.json()
+    except:
+        print("❌ request failed")
         return []
-
-    videos = []
 
     if "data" not in data:
         print("❌ no data")
         return []
 
-    for v in data["data"]:
+    videos = []
 
+    for v in data["data"]:
         videos.append({
-            "url": v.get("play", ""),
-            "title": v.get("title", ""),
             "author": v.get("author", {}).get("nickname", ""),
+            "title": v.get("title", ""),
             "like": v.get("digg_count", 0),
-            "comment": v.get("comment_count", 0)
+            "comment": v.get("comment_count", 0),
+            "play": v.get("play_count", 0),
+            "url": f"https://www.tiktok.com/@{v.get('author', {}).get('unique_id','')}/video/{v.get('video_id','')}"
         })
 
-    print(f"🎥 found {len(videos)} videos")
     return videos
 
+# ===== 内容判断 =====
+def is_good(video):
+    title = video["title"].lower()
 
-# ===== Telegram =====
-def send_telegram(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram skipped")
-        return
+    signals = [
+        "routine",
+        "vlog",
+        "day",
+        "生活",
+        "治愈",
+        "分享",
+        "日常",
+        "self care"
+    ]
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    # 👉 至少有内容关键词
+    if not any(s in title for s in signals):
+        return False
 
-    try:
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": msg
-        })
-    except Exception as e:
-        print("❌ telegram error:", e)
+    # 👉 基本互动
+    if video["like"] < 1000:
+        return False
 
+    return True
+
+# ===== 爆点分析 =====
+def analyze(video):
+    title = video["title"].lower()
+
+    hook = "未知"
+
+    if "routine" in title:
+        hook = "日常流程（容易复制）"
+    elif "vlog" in title:
+        hook = "真实生活感"
+    elif "治愈" in title:
+        hook = "情绪陪伴"
+    elif "skincare" in title:
+        hook = "变美焦虑"
+    elif "perfume" in title:
+        hook = "气味记忆 + 气质标签"
+
+    return hook
 
 # ===== 主流程 =====
 def main():
     all_videos = []
 
     for k in KEYWORDS:
-        result = search_videos(k)
-        all_videos += result
-        time.sleep(2)
+        all_videos += search_videos(k)
+        time.sleep(random.randint(2,4))
 
-    print(f"🚀 total videos: {len(all_videos)}")
-
-    if len(all_videos) == 0:
-        send_telegram("❌ 没有抓到任何视频（可能API没额度）")
-        return
+    print(f"🚀 total: {len(all_videos)}")
 
     for v in all_videos:
+        if not is_good(v):
+            continue
+
+        insight = analyze(v)
 
         msg = f"""
-🔥 TikTok 视频
+🔥 TikTok内容参考
 
 👤 作者: {v['author']}
 📝 标题: {v['title']}
 
 👍 {v['like']} | 💬 {v['comment']}
 
+🧠 爆点: {insight}
+
 🔗 {v['url']}
 """
 
-        send_telegram(msg)
+        send(msg)
 
-        time.sleep(random.randint(2,5))
+        time.sleep(random.randint(2,4))
 
     print("🔥 script finished")
-
 
 if __name__ == "__main__":
     main()
