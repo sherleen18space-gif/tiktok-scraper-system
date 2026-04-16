@@ -8,21 +8,23 @@ RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 👉 用你原本“能跑”的关键词逻辑 + 升级
+# ✅ 核心：用“稳定出数据关键词”
 KEYWORDS = [
-    "daily life",
-    "self care",
-    "skincare",
-    "perfume",
-    "work life",
-    "office life",
-    "生活日常",
-    "女生生活"
+    "makeup",
+    "skincare routine",
+    "grwm",
+    "ootd",
+    "morning routine",
+    "night routine",
+    "beauty tips"
 ]
+
+# 👉 fallback（保证永远有数据）
+FALLBACK_KEYWORD = "makeup"
 
 MIN_LIKE = 500
 MIN_COMMENT = 5
-MAX_RESULTS = 15
+MAX_RESULTS = 10
 
 
 # ===== Telegram =====
@@ -33,26 +35,30 @@ def send_telegram(msg):
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": msg
-    })
+    try:
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": msg
+        })
+    except Exception as e:
+        print("❌ telegram error:", e)
 
 
-# ===== 评分（简单有效）=====
+# ===== 简单评分 =====
 def score_video(v):
     return v["like"] + (v["comment"] * 3)
 
 
-# ===== 改编提示（重点🔥）=====
+# ===== 改编提示（卖货关键）=====
 def generate_insight(v):
-    return """👉 改法：
-1. 换成 KL女生 / 打工人
-2. 加一个“被注意 / 被记住”的瞬间
-3. 用香味当转变点"""
+    return """👉 改成你的版本：
+1. 换成 KL上班女生
+2. 加“很累 / 没人注意”的情绪
+3. 用“香味”作为改变点
+4. 结果：被注意 / 被记住"""
 
 
-# ===== 抓数据（你原本稳定版本）=====
+# ===== 抓数据 =====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
@@ -73,6 +79,9 @@ def search_videos(keyword):
     try:
         res = requests.get(url, headers=headers, params=querystring, timeout=20)
         data = res.json()
+
+        print("STATUS:", res.status_code)
+
     except Exception as e:
         print("❌ error:", e)
         return []
@@ -115,11 +124,17 @@ def main():
 
     for k in KEYWORDS:
         vids = search_videos(k)
+
+        # 👉 fallback：如果这个keyword没数据
+        if not vids:
+            print(f"⚠️ fallback for {k}")
+            vids = search_videos(FALLBACK_KEYWORD)
+
         all_videos += vids
-        time.sleep(2)
+        time.sleep(1)
 
     if not all_videos:
-        send_telegram("❌ 今天没有抓到内容（API正常但无匹配）")
+        send_telegram("❌ 今天完全没数据（API异常）")
         return
 
     # 排序
@@ -150,7 +165,7 @@ def main():
 🔗 {v['url']}
 """
         send_telegram(msg)
-        time.sleep(2)
+        time.sleep(1)
 
     print("🔥 Radar finished")
 
