@@ -8,22 +8,21 @@ RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ===== 用US抓爆款 =====
-REGION = "US"
-
+# 👉 用你原本“能跑”的关键词逻辑 + 升级
 KEYWORDS = [
-    "tiktok made me buy it",
-    "perfume that gets compliments",
-    "how to smell good all day",
-    "that girl glow up",
-    "office girl routine",
-    "lazy girl routine",
-    "high maintenance girl"
+    "daily life",
+    "self care",
+    "skincare",
+    "perfume",
+    "work life",
+    "office life",
+    "生活日常",
+    "女生生活"
 ]
 
-MIN_LIKE = 1000
-MIN_COMMENT = 10
-MAX_RESULTS = 10
+MIN_LIKE = 500
+MIN_COMMENT = 5
+MAX_RESULTS = 15
 
 
 # ===== Telegram =====
@@ -34,40 +33,26 @@ def send_telegram(msg):
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    try:
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": msg
-        })
-    except Exception as e:
-        print("❌ telegram error:", e)
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": msg
+    })
 
 
-# ===== 评分（简单稳定）=====
+# ===== 评分（简单有效）=====
 def score_video(v):
-    return v["like"] + (v["comment"] * 5)
+    return v["like"] + (v["comment"] * 3)
 
 
-# ===== 改编建议（核心）=====
+# ===== 改编提示（重点🔥）=====
 def generate_insight(v):
-    title = (v["title"] or "").lower()
-
-    if "office" in title:
-        return "👉 改：KL打工人女生 + 上班压力 + 香味提升状态"
-
-    if "routine" in title:
-        return "👉 改：女生routine + 加一个“变好闻”的关键点"
-
-    if "girl" in title:
-        return "👉 改：强调“被注意 / 被记住 / 有吸引力”"
-
-    if "perfume" in title or "smell" in title:
-        return "👉 改：男生视角 + 什么味道更吸引人"
-
-    return "👉 改：加女生情绪 + 办公室 + 吸引力"
+    return """👉 改法：
+1. 换成 KL女生 / 打工人
+2. 加一个“被注意 / 被记住”的瞬间
+3. 用香味当转变点"""
 
 
-# ===== 抓搜索 =====
+# ===== 抓数据（你原本稳定版本）=====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
@@ -77,7 +62,7 @@ def search_videos(keyword):
         "keywords": keyword,
         "count": "5",
         "cursor": "0",
-        "region": REGION
+        "region": "MY"
     }
 
     headers = {
@@ -88,45 +73,12 @@ def search_videos(keyword):
     try:
         res = requests.get(url, headers=headers, params=querystring, timeout=20)
         data = res.json()
-
-        print("STATUS:", res.status_code)
-        print("RAW:", str(data)[:200])  # 👉 debug用
-
     except Exception as e:
-        print("❌ request error:", e)
+        print("❌ error:", e)
         return []
 
     items = data.get("data", {}).get("videos", [])
 
-    return parse_items(items)
-
-
-# ===== 抓Trending（备用）=====
-def trending_videos():
-    print("🔥 fallback to trending")
-
-    url = "https://tiktok-scraper7.p.rapidapi.com/trending"
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
-    }
-
-    try:
-        res = requests.get(url, headers=headers, timeout=20)
-        data = res.json()
-
-        items = data.get("data", [])
-
-        return parse_items(items)
-
-    except Exception as e:
-        print("❌ trending error:", e)
-        return []
-
-
-# ===== 统一解析 =====
-def parse_items(items):
     videos = []
 
     for v in items:
@@ -134,7 +86,7 @@ def parse_items(items):
             continue
 
         try:
-            url = v.get("play", "") or v.get("url", "")
+            video_url = v.get("play", "") or v.get("url", "")
             title = v.get("title", "") or v.get("desc", "")
 
             stats = v.get("stats", {}) or {}
@@ -144,7 +96,7 @@ def parse_items(items):
 
             if like >= MIN_LIKE and comment >= MIN_COMMENT:
                 videos.append({
-                    "url": url,
+                    "url": video_url,
                     "title": title,
                     "like": like,
                     "comment": comment
@@ -153,6 +105,7 @@ def parse_items(items):
         except:
             continue
 
+    print(f"🎥 found {len(videos)} videos")
     return videos
 
 
@@ -163,14 +116,10 @@ def main():
     for k in KEYWORDS:
         vids = search_videos(k)
         all_videos += vids
-        time.sleep(1)
-
-    # 👉 如果search没数据，用trending
-    if not all_videos:
-        all_videos = trending_videos()
+        time.sleep(2)
 
     if not all_videos:
-        send_telegram("❌ 今天完全没数据（API可能挂了）")
+        send_telegram("❌ 今天没有抓到内容（API正常但无匹配）")
         return
 
     # 排序
@@ -190,7 +139,7 @@ def main():
 
     # 推送
     for v in final_list:
-        msg = f"""🔥 今日爆款灵感
+        msg = f"""🔥 今日内容灵感
 
 👍 {v['like']} | 💬 {v['comment']}
 
@@ -201,7 +150,7 @@ def main():
 🔗 {v['url']}
 """
         send_telegram(msg)
-        time.sleep(1)
+        time.sleep(2)
 
     print("🔥 Radar finished")
 
