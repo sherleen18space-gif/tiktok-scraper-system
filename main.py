@@ -1,208 +1,186 @@
-print("🔥 script started")
+print("🔥 content system started")
 
-import os, requests, re, time, random
-from playwright.sync_api import sync_playwright
+import os
+import requests
+import time
+import random
 
 # ===== 配置 =====
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
-BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-TABLE = os.getenv("AIRTABLE_TABLE") or "视频分析"
-
+RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 👉 生活 + 情绪 + 轻产品（混合）
+# ===== 你的目标人群关键词（已优化）=====
 KEYWORDS = [
-    "dailyvlog",
-    "dayinmylife",
-    "cleangirl",
-    "selfcare",
-    "aesthetic",
+    # 英文（全球趋势）
+    "self care routine",
+    "day in my life",
+    "glow up",
+    "that girl routine",
+    "work life balance",
 
-    "生活日常",
-    "我的一天",
-    "治愈系",
-    "压力释放",
+    # 中文（更贴近亚洲）
     "女生生活",
+    "打工人日常",
+    "治愈日常",
+    "护肤分享",
+    "香水推荐",
 
-    "perfumeroutine",
-    "skincareroutine"
+    # 马来/本地感
+    "daily routine girl",
+    "aesthetic life",
 ]
 
-# ===== 搜索（用tag更稳定）=====
-def search_videos(keyword):
-    print(f"🔍 searching: {keyword}")
-
-    tag = keyword.replace(" ", "")
-    url = f"https://www.tiktok.com/tag/{tag}"
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page()
-
-        try:
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(6000)
-        except:
-            browser.close()
-            return []
-
-        links = page.eval_on_selector_all(
-            "a[href*='/video/']",
-            "els => els.map(e => e.href)"
-        )
-
-        browser.close()
-
-    links = list(set(links))
-    random.shuffle(links)
-
-    print(f"🎥 found {len(links)} videos")
-    return links[:5]
-
-
-# ===== 抓视频 =====
-def scrape_video(url):
-    print(f"📊 scraping: {url}")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = browser.new_page()
-
-        try:
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(4000)
-        except:
-            browser.close()
-            return None
-
-        html = page.content().lower()
-
-        like = re.search(r'"diggcount":(\d+)', html)
-        comment = re.search(r'"commentcount":(\d+)', html)
-        title = re.search(r'<title>(.*?)</title>', html)
-
-        browser.close()
-
-        return {
-            "url": url,
-            "like": int(like.group(1)) if like else 0,
-            "comment": int(comment.group(1)) if comment else 0,
-            "title": title.group(1) if title else ""
-        }
-
-
-# ===== 判断是否值得分析 =====
-def is_good(data):
-    if data["like"] < 1000:
-        return False
-    if data["comment"] < 20:
-        return False
-    return True
-
-
-# ===== 爆点分析（核心）=====
-def analyze(data):
-    text = data["title"]
-
-    emotion = "普通"
-    if any(x in text for x in ["stress", "压力", "tired", "累"]):
-        emotion = "压力释放"
-    elif any(x in text for x in ["happy", "love", "治愈"]):
-        emotion = "治愈感"
-
-    persona = "普通人"
-    if any(x in text for x in ["that girl", "clean girl", "精致"]):
-        persona = "精致人设"
-
-    hook = "日常切入"
-    if any(x in text for x in ["how", "tips", "方法"]):
-        hook = "教学钩子"
-
-    return {
-        "emotion": emotion,
-        "persona": persona,
-        "hook": hook
-    }
-
-
-# ===== 自动生成内容方案 =====
-def generate_idea(data, analysis):
-
-    idea = f"{analysis['persona']}的一天 + {analysis['emotion']}"
-
-    copy = f"我最近真的有点{analysis['emotion']}，所以开始这样生活…"
-
-    shoot = "前3秒直接展示情绪 + 快节奏切换日常 + 结尾留空白引评论"
-
-    return idea, copy, shoot
-
-
 # ===== Telegram =====
-def send_telegram(data, analysis, idea, copy, shoot):
-
-    msg = f"""🔥 爆款参考
-
-🎬 标题：
-{data['title']}
-
-🔗 {data['url']}
-
-📊 数据：
-👍 {data['like']}  💬 {data['comment']}
-
-🧠 为什么会爆：
-情绪：{analysis['emotion']}
-人设：{analysis['persona']}
-钩子：{analysis['hook']}
-
-🎯 可复制选题：
-{idea}
-
-📝 文案开头：
-{copy}
-
-📹 拍法：
-{shoot}
-"""
-
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     requests.post(url, data={
         "chat_id": CHAT_ID,
-        "text": msg
+        "text": msg[:4000]  # 防止超长
     })
+
+
+# ===== TikTok API =====
+def search_videos(keyword):
+    print(f"🔍 {keyword}")
+
+    url = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
+
+    querystring = {
+        "keywords": keyword,
+        "count": "3",
+        "region": "MY",      # 👉 马来西亚
+        "publish_time": "1"  # 👉 最新
+    }
+
+    headers = {
+        "X-RapidAPI-Key": RAPID_API_KEY,
+        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=querystring, timeout=20)
+        data = res.json()
+        return data.get("data", [])
+    except:
+        print("❌ API error")
+        return []
+
+
+# ===== 筛选（你的人群核心）=====
+def is_target(v):
+    caption = v.get("title", "").lower()
+
+    # ❌ 不要的（娱乐/无关）
+    bad = ["funny", "meme", "prank", "game", "football", "cat"]
+
+    # ✅ 你要的（成长 + 情绪 + 女生）
+    good = [
+        "routine", "life", "self", "care",
+        "glow", "vlog", "day",
+        "生活", "日常", "女生", "护肤", "香水", "治愈"
+    ]
+
+    if any(b in caption for b in bad):
+        return False
+
+    if any(g in caption for g in good):
+        return True
+
+    return False
+
+
+# ===== 内容分析（核心价值）=====
+def build_content(v):
+    author = v.get("author", {}).get("nickname", "")
+    uid = v.get("author", {}).get("unique_id", "")
+    caption = v.get("title", "")
+    likes = v.get("digg_count", 0)
+    comments = v.get("comment_count", 0)
+    video_id = v.get("aweme_id")
+
+    link = f"https://www.tiktok.com/@{uid}/video/{video_id}"
+
+    # ===== 类型判断 =====
+    idea = "生活记录"
+    if "routine" in caption.lower():
+        idea = "日常变美"
+    elif "香水" in caption or "perfume" in caption.lower():
+        idea = "精致消费"
+    elif "压力" in caption or "stress" in caption.lower():
+        idea = "情绪陪伴"
+
+    # ===== 输出内容（重点）=====
+    return f"""
+🔥 今日选题灵感
+
+👤 作者: {author}
+📝 标题: {caption}
+
+❤️ {likes} ｜💬 {comments}
+
+🎯 内容类型: {idea}
+
+———
+
+✨ 为什么会爆：
+1️⃣ 真实打工人状态（共鸣）
+2️⃣ 低门槛可模仿
+3️⃣ 情绪价值（治愈/放松）
+
+———
+
+🎬 你可以这样拍（直接用）：
+
+👉 标题：
+“下班后的我，只靠这个救命…”
+
+👉 开头（3秒钩子）：
+“今天真的累到不想说话…”
+
+👉 中间：
+- 回家
+- 洗澡 / 护肤 / 喷香水
+- 放松过程
+
+👉 结尾：
+“这就是我每天最期待的10分钟”
+
+———
+
+💰 可带产品：
+香水 / 护肤 / 情绪消费
+
+🔗 {link}
+"""
 
 
 # ===== 主流程 =====
 def main():
+    if not RAPID_API_KEY:
+        print("❌ Missing RAPID_API_KEY")
+        return
 
-    all_links = []
+    all_videos = []
 
     for k in KEYWORDS:
-        all_links += search_videos(k)
+        videos = search_videos(k)
+        all_videos += videos
+        time.sleep(2)
 
-    all_links = list(set(all_links))
-    print(f"🚀 total: {len(all_links)}")
+    print(f"🎥 total: {len(all_videos)}")
 
-    for link in all_links:
-
-        data = scrape_video(link)
-
-        if not data:
+    for v in all_videos:
+        if not is_target(v):
+            print("❌ skip")
             continue
 
-        if not is_good(data):
-            continue
-
-        analysis = analyze(data)
-        idea, copy, shoot = generate_idea(data, analysis)
-
-        send_telegram(data, analysis, idea, copy, shoot)
+        msg = build_content(v)
+        send_telegram(msg)
 
         time.sleep(random.randint(3,6))
 
-    print("🔥 script finished")
+    print("🔥 done")
 
 
 if __name__ == "__main__":
