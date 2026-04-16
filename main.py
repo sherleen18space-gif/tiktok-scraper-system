@@ -8,7 +8,7 @@ import random
 # ===== API配置 =====
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 
-BASE_URL = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
+BASE_URL = "https://tiktok-scraper7.p.rapidapi.com/search"
 
 HEADERS = {
     "X-RapidAPI-Key": RAPID_API_KEY,
@@ -21,12 +21,17 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ===== 关键词 =====
 KEYWORDS = [
-    "skincare",
+   "skincare routine",
     "perfume",
     "daily vlog",
     "self care",
     "生活日常",
-    "女生生活"
+    "女生生活",
+    "马来西亚生活",
+    "KL vlog",
+    "上班族",
+    "打工人",
+    "治愈"
 ]
 
 # ===== 获取视频 =====
@@ -34,9 +39,8 @@ def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
     querystring = {
-        "keywords": keyword,
-        "count": "3",
-        "cursor": "0"
+        "keyword": keyword,
+        "count": "5"
     }
 
     try:
@@ -49,31 +53,18 @@ def search_videos(keyword):
     videos = []
 
     if "data" not in data:
-        print("❌ no data field")
+        print("❌ no data")
         return []
 
     for v in data["data"]:
 
-        # ===== 情况1：API只返回link（字符串）=====
-        if isinstance(v, str):
-            videos.append({
-                "url": v,
-                "title": "",
-                "author": "",
-                "like": 0,
-                "comment": 0
-            })
-            continue
-
-        # ===== 情况2：正常dict=====
-        if isinstance(v, dict):
-            videos.append({
-                "url": v.get("play", ""),
-                "title": v.get("title", ""),
-                "author": v.get("author", {}).get("nickname", ""),
-                "like": v.get("digg_count", 0),
-                "comment": v.get("comment_count", 0)
-            })
+        videos.append({
+            "url": v.get("play", ""),
+            "title": v.get("title", ""),
+            "author": v.get("author", {}).get("nickname", ""),
+            "like": v.get("digg_count", 0),
+            "comment": v.get("comment_count", 0)
+        })
 
     print(f"🎥 found {len(videos)} videos")
     return videos
