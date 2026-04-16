@@ -1,193 +1,174 @@
-print("🔥 content system started")
+print("🔥 script started")
 
 import os
 import requests
 import time
 import random
 
-# ===== 环境变量 =====
+# ===== API配置 =====
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
+
+# 👉 TikWM endpoint
+BASE_URL = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
+
+HEADERS = {
+    "X-RapidAPI-Key": RAPID_API_KEY,
+    "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
+}
+
+# ===== Telegram =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-print("RAPID:", "OK" if RAPID_API_KEY else "MISSING")
-print("TG:", "OK" if TELEGRAM_TOKEN else "MISSING")
-
-
-# ===== 关键词（已优化：生活化 + 情绪 + 女生）=====
+# ===== 关键词（重点：生活化 + 本地）=====
 KEYWORDS = [
-    "day in my life girl",
-    "self care routine",
-    "after work routine",
-    "night routine girl",
-    "that girl routine",
-
-    "打工人日常",
+    "skincare routine",
+    "perfume",
+    "daily vlog",
+    "day in my life",
+    "self care",
+    "生活日常",
     "女生生活",
-    "治愈日常",
-    "下班生活",
-    "护肤分享",
-    "香水推荐"
+    "治愈",
+    "压力",
+    "打工人"
 ]
 
+# ===== 获取视频 =====
+def search_videos(keyword):
+    print(f"🔍 searching: {keyword}")
+
+    querystring = {
+        "keywords": keyword,
+        "count": "5",   # 每个关键词拿5个
+        "cursor": "0"
+    }
+
+    try:
+        response = requests.get(BASE_URL, headers=HEADERS, params=querystring)
+        data = response.json()
+    except:
+        print("❌ API error")
+        return []
+
+    videos = []
+
+    if "data" in data:
+        for v in data["data"]:
+            videos.append({
+                "url": v.get("play", ""),
+                "title": v.get("title", ""),
+                "author": v.get("author", {}).get("nickname", ""),
+                "like": v.get("digg_count", 0),
+                "comment": v.get("comment_count", 0),
+                "create_time": v.get("create_time", 0)
+            })
+
+    print(f"🎥 found {len(videos)} videos")
+    return videos
+
+# ===== 内容筛选 =====
+def is_good_video(v):
+    text = (v["title"] or "").lower()
+
+    # ❌ 过滤无关内容
+    bad_words = ["funny", "game", "meme", "cat", "monkey"]
+    if any(b in text for b in bad_words):
+        return False
+
+    # ✔ 内容型关键词
+    good_words = [
+        "routine",
+        "day",
+        "vlog",
+        "life",
+        "self",
+        "care",
+        "study",
+        "work",
+        "生活",
+        "日常",
+        "治愈",
+        "压力",
+        "成长"
+    ]
+
+    score = sum(1 for w in good_words if w in text)
+
+    return score >= 1
+
+# ===== 爆款分析 =====
+def analyze(v):
+    like = v["like"]
+    comment = v["comment"]
+    text = v["title"]
+
+    hook = "日常记录"
+    if "routine" in text.lower():
+        hook = "routine吸引"
+    if "vlog" in text.lower():
+        hook = "真实生活感"
+    if "治愈" in text:
+        hook = "情绪共鸣"
+
+    return f"""
+📌 作者: {v['author']}
+🧠 类型: {hook}
+
+🔥 点赞: {like}
+💬 评论: {comment}
+
+💡 标题:
+{text}
+
+🎯 可做选题:
+👉 模仿这个主题拍：{hook}
+"""
 
 # ===== Telegram =====
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("❌ Telegram missing")
+        print("⚠️ Telegram skipped")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     requests.post(url, data={
         "chat_id": CHAT_ID,
-        "text": msg[:4000]
+        "text": msg
     })
-
-
-# ===== TikTok API =====
-def search_videos(keyword):
-    print(f"🔍 searching: {keyword}")
-
-    url = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
-
-    querystring = {
-        "keywords": keyword,
-        "count": "3",
-        "region": "MY",       # 👉 马来西亚
-        "publish_time": "1"   # 👉 最新
-    }
-
-    headers = {
-        "X-RapidAPI-Key": RAPID_API_KEY,
-        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
-    }
-
-    try:
-        res = requests.get(url, headers=headers, params=querystring, timeout=20)
-        data = res.json()
-        return data.get("data", [])
-    except:
-        print("❌ API error")
-        return []
-
-
-# ===== 筛选逻辑（放宽，不会全死）=====
-def is_target(v):
-    caption = v.get("title", "").lower()
-
-    bad = ["funny", "prank", "meme", "game", "football"]
-
-    if any(b in caption for b in bad):
-        return False
-
-    return True  # 👉 放宽（重点！！）
-
-
-# ===== 内容生成（核心）=====
-def build_content(v):
-    author = v.get("author", {}).get("nickname", "")
-    uid = v.get("author", {}).get("unique_id", "")
-    caption = v.get("title", "")
-    likes = v.get("digg_count", 0)
-    comments = v.get("comment_count", 0)
-    video_id = v.get("aweme_id")
-
-    link = f"https://www.tiktok.com/@{uid}/video/{video_id}"
-
-    text = caption.lower()
-
-    # ===== 类型判断 =====
-    if "routine" in text:
-        idea = "日常变美"
-    elif "香水" in caption or "perfume" in text:
-        idea = "精致消费"
-    elif "压力" in caption or "stress" in text:
-        idea = "情绪陪伴"
-    else:
-        idea = "真实生活"
-
-    # ===== 输出你的内容（核心）=====
-    return f"""
-🔥 今日可拍内容（直接用）
-
-👤 作者: {author}
-📝 标题: {caption}
-
-❤️ {likes} ｜💬 {comments}
-
-🎯 类型: {idea}
-
-———
-
-✨ 为什么会爆：
-1️⃣ 打工人共鸣（累 / 压力）
-2️⃣ 真实感（不像广告）
-3️⃣ 低门槛（人人可模仿）
-
-———
-
-🎬 直接拍这个（照抄都行）：
-
-👉 标题：
-“下班后的我，只想这样活…”
-
-👉 开头（3秒）：
-“今天真的累到不想讲话…”
-
-👉 中间：
-- 回家（画面）
-- 洗澡 / 护肤 / 喷香水
-- 躺床 / 放松
-
-👉 结尾：
-“这是我每天最期待的时刻”
-
-———
-
-💰 可带产品：
-香水 / 护肤 / 情绪消费
-
-🔗 {link}
-"""
-
 
 # ===== 主流程 =====
 def main():
-    if not RAPID_API_KEY:
-        print("❌ Missing API KEY")
-        return
-
     all_videos = []
 
     for k in KEYWORDS:
-        videos = search_videos(k)
-        all_videos += videos
+        all_videos += search_videos(k)
         time.sleep(2)
 
-    print(f"🎥 total videos: {len(all_videos)}")
+    print(f"🚀 total videos: {len(all_videos)}")
 
-    valid_found = False
+    if len(all_videos) == 0:
+        print("❌ no data")
+        return
 
     for v in all_videos:
-        if not is_target(v):
+        if not is_good_video(v):
+            print("❌ skip")
             continue
 
-        valid_found = True
-        msg = build_content(v)
+        msg = f"""
+🔥 可参考视频
+
+🔗 {v['url']}
+
+{analyze(v)}
+"""
         send_telegram(msg)
 
         time.sleep(random.randint(3,6))
 
-    # ===== fallback（关键）=====
-    if not valid_found and len(all_videos) > 0:
-        print("⚠️ fallback sending")
-
-        for v in all_videos[:3]:
-            msg = build_content(v)
-            send_telegram(msg)
-
-    print("🔥 done")
+    print("🔥 script finished")
 
 
 if __name__ == "__main__":
