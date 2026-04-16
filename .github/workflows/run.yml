@@ -1,32 +1,29 @@
-name: run
+name: Run TikTok Script
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */6 * * *"   # 每6小时跑一次
   workflow_dispatch:
 
 jobs:
-  run:
+  run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install playwright requests
-          playwright install
-          playwright install-deps
+        run: pip install requests
 
       - name: Run script
         run: python main.py
         env:
-          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
-          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
-          AIRTABLE_TABLE: ${{ secrets.AIRTABLE_TABLE }}
+          RAPID_API_KEY: ${{ secrets.RAPID_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
