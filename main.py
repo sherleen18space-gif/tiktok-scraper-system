@@ -11,22 +11,30 @@ TABLE = os.getenv("AIRTABLE_TABLE") or "视频分析"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# 👉 生活 + 情绪 + 轻产品（混合）
 KEYWORDS = [
-    "skincare",
-    "perfume",
-    "routine",
+    "dailyvlog",
+    "dayinmylife",
+    "cleangirl",
+    "selfcare",
+    "aesthetic",
+
     "生活日常",
-    "护肤",
-    "香水",
-    "vlog",
-    "morning routine"
+    "我的一天",
+    "治愈系",
+    "压力释放",
+    "女生生活",
+
+    "perfumeroutine",
+    "skincareroutine"
 ]
 
-# ===== 搜索 =====
+# ===== 搜索（用tag更稳定）=====
 def search_videos(keyword):
     print(f"🔍 searching: {keyword}")
 
-    url = f"https://www.tiktok.com/search?q={keyword}"
+    tag = keyword.replace(" ", "")
+    url = f"https://www.tiktok.com/tag/{tag}"
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -34,7 +42,7 @@ def search_videos(keyword):
 
         try:
             page.goto(url, timeout=60000)
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(6000)
         except:
             browser.close()
             return []
@@ -47,12 +55,13 @@ def search_videos(keyword):
         browser.close()
 
     links = list(set(links))
+    random.shuffle(links)
+
     print(f"🎥 found {len(links)} videos")
+    return links[:5]
 
-    return links[:3]
 
-
-# ===== 抓数据 =====
+# ===== 抓视频 =====
 def scrape_video(url):
     print(f"📊 scraping: {url}")
 
@@ -69,11 +78,8 @@ def scrape_video(url):
 
         html = page.content().lower()
 
-        # 数据
         like = re.search(r'"diggcount":(\d+)', html)
         comment = re.search(r'"commentcount":(\d+)', html)
-
-        # 👉 抓标题（比html keyword更准）
         title = re.search(r'<title>(.*?)</title>', html)
 
         browser.close()
@@ -86,69 +92,78 @@ def scrape_video(url):
         }
 
 
-# ===== 内容判断（核心升级）=====
-def is_good_content(data):
-
-    text = data["title"].lower()
-
-    # ✅ 数据层（不要太爆）
-    if data["like"] < 1000 or data["comment"] < 20:
+# ===== 判断是否值得分析 =====
+def is_good(data):
+    if data["like"] < 1000:
         return False
-
-    # ✅ 本地 + 语言
-    local_signals = [
-        "malaysia", "kl", "my",
-        "生活", "日常", "护肤", "推荐", "分享"
-    ]
-
-    # ✅ 内容结构
-    content_signals = [
-        "routine", "review", "vlog",
-        "day", "how", "tips", "开箱"
-    ]
-
-    if any(s in text for s in local_signals + content_signals):
-        return True
-
-    return False
+    if data["comment"] < 20:
+        return False
+    return True
 
 
-# ===== Airtable =====
-def push_airtable(data):
-    if not AIRTABLE_API_KEY or not BASE_ID:
-        return
+# ===== 爆点分析（核心）=====
+def analyze(data):
+    text = data["title"]
 
-    url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE}"
+    emotion = "普通"
+    if any(x in text for x in ["stress", "压力", "tired", "累"]):
+        emotion = "压力释放"
+    elif any(x in text for x in ["happy", "love", "治愈"]):
+        emotion = "治愈感"
 
-    headers = {
-        "Authorization": f"Bearer {AIRTABLE_API_KEY}",
-        "Content-Type": "application/json"
+    persona = "普通人"
+    if any(x in text for x in ["that girl", "clean girl", "精致"]):
+        persona = "精致人设"
+
+    hook = "日常切入"
+    if any(x in text for x in ["how", "tips", "方法"]):
+        hook = "教学钩子"
+
+    return {
+        "emotion": emotion,
+        "persona": persona,
+        "hook": hook
     }
 
-    payload = {
-        "fields": {
-            "视频链接": data["url"],
-            "标题": data["title"],
-            "点赞": data["like"],
-            "评论": data["comment"]
-        }
-    }
 
-    requests.post(url, json=payload, headers=headers)
+# ===== 自动生成内容方案 =====
+def generate_idea(data, analysis):
+
+    idea = f"{analysis['persona']}的一天 + {analysis['emotion']}"
+
+    copy = f"我最近真的有点{analysis['emotion']}，所以开始这样生活…"
+
+    shoot = "前3秒直接展示情绪 + 快节奏切换日常 + 结尾留空白引评论"
+
+    return idea, copy, shoot
 
 
 # ===== Telegram =====
-def send_telegram(data):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        return
+def send_telegram(data, analysis, idea, copy, shoot):
 
-    msg = f"""🔥 可参考内容
+    msg = f"""🔥 爆款参考
 
+🎬 标题：
 {data['title']}
 
-{data['url']}
+🔗 {data['url']}
 
-👍 {data['like']}   💬 {data['comment']}
+📊 数据：
+👍 {data['like']}  💬 {data['comment']}
+
+🧠 为什么会爆：
+情绪：{analysis['emotion']}
+人设：{analysis['persona']}
+钩子：{analysis['hook']}
+
+🎯 可复制选题：
+{idea}
+
+📝 文案开头：
+{copy}
+
+📹 拍法：
+{shoot}
 """
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -168,7 +183,7 @@ def main():
         all_links += search_videos(k)
 
     all_links = list(set(all_links))
-    print(f"🚀 total videos: {len(all_links)}")
+    print(f"🚀 total: {len(all_links)}")
 
     for link in all_links:
 
@@ -177,14 +192,13 @@ def main():
         if not data:
             continue
 
-        if not is_good_content(data):
-            print("❌ skip")
+        if not is_good(data):
             continue
 
-        print("✅ GOOD:", data["title"])
+        analysis = analyze(data)
+        idea, copy, shoot = generate_idea(data, analysis)
 
-        push_airtable(data)
-        send_telegram(data)
+        send_telegram(data, analysis, idea, copy, shoot)
 
         time.sleep(random.randint(3,6))
 
