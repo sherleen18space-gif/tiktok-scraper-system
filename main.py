@@ -1,56 +1,232 @@
+print("🔥 script started")
+
+import os
 import requests
 import time
-import urllib.parse
 
-TELEGRAM_TOKEN = "你的token"
-CHAT_ID = "你的chatid"
+RAPID_API_KEY = os.getenv("RAPID_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# ===== 配置 =====
 KEYWORDS = [
-    "perfume girl",
-    "smell good girl",
-    "office girl routine",
-    "that girl glow up",
-    "self care girl",
-    "tiktok made me buy it",
-    "grwm",
-    "kl girl style"
+    "how to smell good",
+    "perfume compliment",
+    "glow up routine",
+    "that girl routine",
+    "self improvement",
+    "burnout routine",
+    "office stress",
+    "女生变美",
+    "精致生活",
+    "提升气质"
+]
+
+MIN_LIKE = 5000
+MIN_COMMENT = 50
+
+BUY_INTENT_KEYWORDS = [
+    "smell", "perfume", "compliment",
+    "glow", "routine", "confidence",
+    "attractive", "变美", "气质", "精致"
 ]
 
 
+# ===== Telegram =====
 def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("❌ telegram config missing")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": msg
-    })
+
+    try:
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": msg
+        })
+    except Exception as e:
+        print("❌ telegram error:", e)
 
 
+# ===== 判断是否是“可卖货内容” =====
+def is_good_video(v):
+    if v["like"] < MIN_LIKE:
+        return False
+
+    if v["comment"] < MIN_COMMENT:
+        return False
+
+    title = (v["title"] or "").lower()
+
+    for kw in BUY_INTENT_KEYWORDS:
+        if kw in title:
+            return True
+
+    return False
+
+
+# ===== 打标签 =====
+def tag_video(v):
+    title = (v["title"] or "").lower()
+
+    if "burnout" in title or "stress" in title:
+        return "打工人情绪"
+
+    if "glow" in title or "变美" in title:
+        return "变美动机"
+
+    if "smell" in title or "perfume" in title:
+        return "香味吸引"
+
+    if "routine" in title:
+        return "生活方式"
+
+    return "其他"
+
+
+# ===== 给拍摄建议 =====
+def generate_angle(tag):
+    if tag == "打工人情绪":
+        return "👉 可拍：KL打工人 + 奖励自己 + 香味提升状态"
+
+    if tag == "变美动机":
+        return "👉 可拍：女生变精致 / 升级感"
+
+    if tag == "香味吸引":
+        return "👉 可拍：男生视角 / 被记住的味道"
+
+    if tag == "生活方式":
+        return "👉 可拍：routine + 轻带货"
+
+    return "👉 可自由发挥"
+
+
+# ===== 抓数据 =====
+def search_videos(keyword):
+    print(f"🔍 searching: {keyword}")
+
+    url = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
+
+    querystring = {
+        "keywords": keyword,
+        "count": "5",
+        "cursor": "0",
+        "region": "MY"
+    }
+
+    headers = {
+        "X-RapidAPI-Key": RAPID_API_KEY,
+        "X-RapidAPI-Host": "tiktok-scraper7.p.rapidapi.com"
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=querystring, timeout=20)
+        print("STATUS:", res.status_code)
+
+        data = res.json()
+    except Exception as e:
+        print("❌ request error:", e)
+        return []
+
+    videos = []
+
+    # ===== 兼容结构 =====
+    items = []
+
+    if "data" in data and "videos" in data["data"]:
+        items = data["data"]["videos"]
+
+    elif "data" in data and "item_list" in data["data"]:
+        items = data["data"]["item_list"]
+
+    elif "aweme_list" in data:
+        items = data["aweme_list"]
+
+    else:
+        print("❌ unknown structure:", data.keys())
+        return []
+
+    for v in items:
+        if not isinstance(v, dict):
+            continue
+
+        try:
+            video_url = v.get("play", "") or v.get("url", "")
+
+            author = ""
+            if isinstance(v.get("author"), dict):
+                author = v.get("author", {}).get("nickname", "")
+
+            title = v.get("title", "") or v.get("desc", "")
+
+            stats = v.get("stats", {}) or {}
+
+            like = stats.get("diggCount", 0)
+            comment = stats.get("commentCount", 0)
+
+            if video_url:
+                videos.append({
+                    "url": video_url,
+                    "author": author,
+                    "title": title,
+                    "like": like,
+                    "comment": comment
+                })
+
+        except Exception as e:
+            print("⚠️ skip one:", e)
+
+    print(f"🎥 found {len(videos)} videos")
+    return videos
+
+
+# ===== 主逻辑 =====
 def main():
-    for kw in KEYWORDS:
-        search_url = "https://www.tiktok.com/search?q=" + urllib.parse.quote(kw)
+    all_videos = []
 
-        msg = f"""🔥 今日选题方向
+    for k in KEYWORDS:
+        vids = search_videos(k)
 
-关键词: {kw}
+        for v in vids:
+            if is_good_video(v):
+                v["tag"] = tag_video(v)
+                all_videos.append(v)
 
-👉 打开这个：
-{search_url}
+        time.sleep(2)
 
-👉 看前5条视频
+    print(f"🚀 filtered videos: {len(all_videos)}")
 
-👉 判断：
-1. 有没有女生情绪（累 / 想变好）
-2. 有没有“被注意 / 被记住”
-3. 能不能改成：
-   KL女生 + 香味吸引
+    if len(all_videos) == 0:
+        send_telegram("❌ 没有筛选到可用的爆款内容（可能API问题或关键词不对）")
+        return
 
-👉 拍的时候：
-- 用男生视角（你优势🔥）
-- 不讲产品，只讲感觉
+    seen = set()
 
+    for v in all_videos:
+        if v["url"] in seen:
+            continue
+
+        seen.add(v["url"])
+
+        msg = f"""🔥 TikTok选题参考
+
+🏷 标签: {v['tag']}
+
+👤 作者: {v['author']}
+📝 标题: {v['title']}
+
+👍 {v['like']} | 💬 {v['comment']}
+
+{generate_angle(v['tag'])}
+
+🔗 {v['url']}
 """
+
         send_telegram(msg)
-        time.sleep(1)
+        time.sleep(2)
+
+    print("🔥 script finished")
 
 
 if __name__ == "__main__":
