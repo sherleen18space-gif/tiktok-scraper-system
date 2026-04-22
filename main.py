@@ -3,6 +3,7 @@ print("🔥 script started")
 import os
 import requests
 import time
+import json
 
 RAPID_API_KEY = os.getenv("RAPID_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -22,8 +23,9 @@ KEYWORDS = [
     "提升气质"
 ]
 
-MIN_LIKE = 5000
-MIN_COMMENT = 50
+# ⬇️ TURUNKAN dulu untuk debug — nanti boleh naikkan balik
+MIN_LIKE = 500
+MIN_COMMENT = 10
 
 BUY_INTENT_KEYWORDS = [
     "smell", "perfume", "compliment",
@@ -41,15 +43,91 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     try:
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": msg
-        })
+        r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print(f"📨 Telegram: {r.status_code}")
     except Exception as e:
         print("❌ telegram error:", e)
 
 
-# ===== 判断是否是“可卖货内容” =====
+# ===== Debug: Print raw response =====
+def debug_print_structure(data, keyword):
+    """Cetak structure API response untuk kita faham format sebenar"""
+    print(f"\n===== DEBUG: '{keyword}' =====")
+    print(f"Top-level keys: {list(data.keys())}")
+
+    if "data" in data:
+        d = data["data"]
+        if isinstance(d, dict):
+            print(f"data keys: {list(d.keys())}")
+
+            # Cuba tengok 1 item je
+            for k in ["videos", "item_list", "aweme_list", "items"]:
+                if k in d and isinstance(d[k], list) and len(d[k]) > 0:
+                    print(f"First item keys in data['{k}']: {list(d[k][0].keys())}")
+                    # Tengok stats field
+                    first = d[k][0]
+                    for stats_key in ["stats", "statistics", "aweme_statistics"]:
+                        if stats_key in first:
+                            print(f"Stats keys: {list(first[stats_key].keys())}")
+                    break
+
+    # Save raw response untuk tengok bila ada masa
+    try:
+        with open(f"debug_{keyword[:10].replace(' ', '_')}.json", "w") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"💾 Saved debug JSON")
+    except:
+        pass
+
+    print("=" * 40)
+
+
+# ===== Extract stats dengan multi-key fallback =====
+def extract_stats(v):
+    """Cuba semua kemungkinan key untuk like & comment"""
+    like = 0
+    comment = 0
+
+    # Cuba dari stats / statistics
+    for stats_key in ["stats", "statistics", "aweme_statistics"]:
+        s = v.get(stats_key, {})
+        if isinstance(s, dict) and s:
+            like = s.get("diggCount") or s.get("like_count") or s.get("playCount") or 0
+            comment = s.get("commentCount") or s.get("comment_count") or 0
+            if like > 0:
+                break
+
+    # Fallback: terus dalam v
+    if like == 0:
+        like = v.get("diggCount") or v.get("like_count") or v.get("likes") or 0
+
+    if comment == 0:
+        comment = v.get("commentCount") or v.get("comment_count") or v.get("comments") or 0
+
+    return int(like), int(comment)
+
+
+# ===== Extract video URL dengan fallback =====
+def extract_url(v):
+    for key in ["play", "url", "video_url", "share_url", "webVideoUrl"]:
+        val = v.get(key)
+        if val and isinstance(val, str) and val.startswith("http"):
+            return val
+
+    # Nested dalam video dict
+    video = v.get("video", {})
+    if isinstance(video, dict):
+        for key in ["play_addr", "play", "url"]:
+            val = video.get(key)
+            if isinstance(val, dict):
+                val = val.get("url_list", [None])[0]
+            if val and isinstance(val, str) and val.startswith("http"):
+                return val
+
+    return ""
+
+
+# =====判断是否是"可卖货内容" =====
 def is_good_video(v):
     if v["like"] < MIN_LIKE:
         return False
@@ -58,6 +136,10 @@ def is_good_video(v):
         return False
 
     title = (v["title"] or "").lower()
+
+    # Kalau title kosong, still accept berdasarkan engagement je
+    if not title:
+        return True
 
     for kw in BUY_INTENT_KEYWORDS:
         if kw in title:
@@ -72,13 +154,10 @@ def tag_video(v):
 
     if "burnout" in title or "stress" in title:
         return "打工人情绪"
-
     if "glow" in title or "变美" in title:
         return "变美动机"
-
     if "smell" in title or "perfume" in title:
         return "香味吸引"
-
     if "routine" in title:
         return "生活方式"
 
@@ -87,32 +166,27 @@ def tag_video(v):
 
 # ===== 给拍摄建议 =====
 def generate_angle(tag):
-    if tag == "打工人情绪":
-        return "👉 可拍：KL打工人 + 奖励自己 + 香味提升状态"
-
-    if tag == "变美动机":
-        return "👉 可拍：女生变精致 / 升级感"
-
-    if tag == "香味吸引":
-        return "👉 可拍：男生视角 / 被记住的味道"
-
-    if tag == "生活方式":
-        return "👉 可拍：routine + 轻带货"
-
-    return "👉 可自由发挥"
+    angles = {
+        "打工人情绪": "👉 可拍：KL打工人 + 奖励自己 + 香味提升状态",
+        "变美动机": "👉 可拍：女生变精致 / 升级感",
+        "香味吸引": "👉 可拍：男生视角 / 被记住的味道",
+        "生活方式": "👉 可拍：routine + 轻带货",
+    }
+    return angles.get(tag, "👉 可自由发挥")
 
 
 # ===== 抓数据 =====
-def search_videos(keyword):
-    print(f"🔍 searching: {keyword}")
+def search_videos(keyword, debug=False):
+    print(f"\n🔍 searching: {keyword}")
 
     url = "https://tiktok-scraper7.p.rapidapi.com/feed/search"
 
     querystring = {
         "keywords": keyword,
-        "count": "5",
+        "count": "10",        # Naikkan dari 5 → 10
         "cursor": "0",
-        "region": "MY"
+        "region": "MY",
+        "publish_time": "0"   # 0 = semua masa, 1 = 24j, 7 = seminggu
     }
 
     headers = {
@@ -121,30 +195,50 @@ def search_videos(keyword):
     }
 
     try:
-        res = requests.get(url, headers=headers, params=querystring, timeout=20)
-        print("STATUS:", res.status_code)
+        res = requests.get(url, headers=headers, params=querystring, timeout=30)
+        print(f"📡 Status: {res.status_code}")
+
+        if res.status_code != 200:
+            print(f"❌ Non-200: {res.text[:300]}")
+            return []
 
         data = res.json()
+
     except Exception as e:
         print("❌ request error:", e)
         return []
 
+    # Debug structure (first keyword je)
+    if debug:
+        debug_print_structure(data, keyword)
+
     videos = []
 
-    # ===== 兼容结构 =====
+    # ===== Multi-path structure parsing =====
     items = []
 
-    if "data" in data and "videos" in data["data"]:
-        items = data["data"]["videos"]
-
-    elif "data" in data and "item_list" in data["data"]:
-        items = data["data"]["item_list"]
+    if "data" in data:
+        d = data["data"]
+        if isinstance(d, dict):
+            for k in ["videos", "item_list", "aweme_list", "items"]:
+                if k in d and isinstance(d[k], list):
+                    items = d[k]
+                    print(f"✅ Found {len(items)} items via data['{k}']")
+                    break
+        elif isinstance(d, list):
+            items = d
+            print(f"✅ data is direct list: {len(items)} items")
 
     elif "aweme_list" in data:
         items = data["aweme_list"]
+        print(f"✅ Found {len(items)} items via aweme_list")
+
+    elif "item_list" in data:
+        items = data["item_list"]
+        print(f"✅ Found {len(items)} items via item_list")
 
     else:
-        print("❌ unknown structure:", data.keys())
+        print(f"❌ Unknown structure. Keys: {list(data.keys())}")
         return []
 
     for v in items:
@@ -152,67 +246,79 @@ def search_videos(keyword):
             continue
 
         try:
-            video_url = v.get("play", "") or v.get("url", "")
+            video_url = extract_url(v)
 
             author = ""
-            if isinstance(v.get("author"), dict):
-                author = v.get("author", {}).get("nickname", "")
+            a = v.get("author", {})
+            if isinstance(a, dict):
+                author = a.get("nickname") or a.get("unique_id") or ""
+            elif isinstance(a, str):
+                author = a
 
-            title = v.get("title", "") or v.get("desc", "")
+            title = v.get("title") or v.get("desc") or v.get("text") or ""
 
-            stats = v.get("stats", {}) or {}
+            like, comment = extract_stats(v)
 
-            like = stats.get("diggCount", 0)
-            comment = stats.get("commentCount", 0)
+            print(f"  📹 {title[:40]!r} | 👍{like} 💬{comment} | url={'✅' if video_url else '❌'}")
 
-            if video_url:
-                videos.append({
-                    "url": video_url,
-                    "author": author,
-                    "title": title,
-                    "like": like,
-                    "comment": comment
-                })
+            videos.append({
+                "url": video_url,
+                "author": author,
+                "title": title,
+                "like": like,
+                "comment": comment
+            })
 
         except Exception as e:
             print("⚠️ skip one:", e)
 
-    print(f"🎥 found {len(videos)} videos")
+    print(f"🎥 Parsed {len(videos)} videos from '{keyword}'")
     return videos
 
 
 # ===== 主逻辑 =====
 def main():
     all_videos = []
+    first_keyword = True
 
     for k in KEYWORDS:
-        vids = search_videos(k)
+        # Debug mode untuk keyword pertama je
+        vids = search_videos(k, debug=first_keyword)
+        first_keyword = False
 
-        for v in vids:
-            if is_good_video(v):
-                v["tag"] = tag_video(v)
-                all_videos.append(v)
+        print(f"  Before filter: {len(vids)} | After filter: ", end="")
+        filtered = [v for v in vids if is_good_video(v)]
+        print(len(filtered))
+
+        for v in filtered:
+            v["tag"] = tag_video(v)
+            all_videos.append(v)
 
         time.sleep(2)
 
-    print(f"🚀 filtered videos: {len(all_videos)}")
+    print(f"\n🚀 Total filtered videos: {len(all_videos)}")
 
     if len(all_videos) == 0:
-        send_telegram("❌ 没有筛选到可用的爆款内容（可能API问题或关键词不对）")
+        msg = (
+            "❌ Tiada video lepas filter\n"
+            f"MIN_LIKE={MIN_LIKE} | MIN_COMMENT={MIN_COMMENT}\n"
+            "Cuba turunkan threshold atau semak API key"
+        )
+        send_telegram(msg)
         return
 
     seen = set()
 
     for v in all_videos:
-        if v["url"] in seen:
+        url_key = v["url"] or v["title"]  # fallback dedup by title
+        if url_key in seen:
             continue
 
-        seen.add(v["url"])
+        seen.add(url_key)
 
         msg = f"""🔥 TikTok选题参考
 
 🏷 标签: {v['tag']}
-
 👤 作者: {v['author']}
 📝 标题: {v['title']}
 
@@ -220,13 +326,12 @@ def main():
 
 {generate_angle(v['tag'])}
 
-🔗 {v['url']}
+🔗 {v['url'] or '(no url)'}
 """
-
         send_telegram(msg)
         time.sleep(2)
 
-    print("🔥 script finished")
+    print("✅ script finished")
 
 
 if __name__ == "__main__":
